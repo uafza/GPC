@@ -1,0 +1,111 @@
+Acquisition Method:,PLGel-Mixed_THF_40deg_1mLmin.amx
+Path:,/20241106_SwissCat_proj1/Results/A069/T02/20251007 105903_A069_T02_RP2.rslt
+1,Method Information
+Last Saved As:,/20241106_SwissCat_proj1/Methods/new_methods/PLGel-Mixed-C-THF/PLGel-Mixed_THF_40deg_1mLmin.amx,Modified:,2025-10-03 11:15:53+02:00,Modifier:,admin
+Created:,2025-09-11 04:39:28+02:00,Creator:,admin,Description:,
+Version:,2025-1003-0915-53194,Method Status:,Generic
+2,Column Comp. Method
+Valve Position:,Position 1 (Port 1 -> 1'),Position Switch After Run:,Do not switch,Module Display Name:,Column Comp.
+Module Type:,G7116A,Order:,1
+2.1,Left Temperature Control
+Left Temp. Control Mode:,Temperature Set,Left Temperature:,40.0 °C
+2.1.1,Enable Analysis Left Temperature
+Enable Analysis Left Temperature On:,No
+2.2,Right Temperature Control
+Right temperature Control Mode:,Combined
+2.2.1,Enable Analysis Right Temperature
+Enable Analysis Right Temperature On:,No
+2.3,Enforce column for run
+Product number:,PL1110-6500,Enforce column for run is enabled:,Yes
+2.4,Thermal equilibration devices
+Enforce left thermal equilibration device:,No,Enforce right thermal equilibration device:,No
+2.5,Stoptime
+Stoptime Mode:,As Pump/Injector
+2.6,Posttime
+Posttime Mode:,Off
+3,DAD Method
+Peakwidth:,> 0.0063 min (0.13 s response time) (40 Hz),UV Lamp Required:,Yes,Module Display Name:,DAD
+Module Type:,G7117C,Order:,1
+3.1,Analog Output
+Analog Zero Offset:,5 %,Analog Attenuation:,1000 mAU
+3.2,Signals
+Signal table
+Acquire,Signal,Wavelength,Bandwidth,Use Ref.,Ref Wavel.,Ref Bandw.
+Yes,Signal A,254.0 nm,4.0 nm,Yes,360.0 nm,100.0 nm
+Yes,Signal B,210.0 nm,4.0 nm,Yes,360.0 nm,100.0 nm
+Yes,Signal C,214.0 nm,4.0 nm,Yes,360.0 nm,100.0 nm
+Yes,Signal D,230.0 nm,4.0 nm,Yes,360.0 nm,100.0 nm
+Yes,Signal E,260.0 nm,4.0 nm,Yes,360.0 nm,100.0 nm
+Yes,Signal F,273.0 nm,4.0 nm,Yes,360.0 nm,100.0 nm
+Yes,Signal G,280.0 nm,4.0 nm,Yes,360.0 nm,100.0 nm
+Yes,Signal H,250.0 nm,4.0 nm,Yes,360.0 nm,100.0 nm
+3.3,Prepare Mode
+Margin for negative Absorbance:,100 mAU
+3.4,Autobalance
+Autobalance Prerun:,Yes,Autobalance Postrun:,No
+3.5,Spectrum
+Spectrum Range WL from:,200.0 nm,Spectrum Range WL to:,400.0 nm,Spectrum Step:,1.0 nm
+Spectrum Store:,All
+3.6,Stoptime
+Stoptime Mode:,As Pump/Injector
+3.7,Posttime
+Posttime Mode:,Off
+4,Quat. Pump Method
+Flow:,1.000 mL/min,Use Solvent Types:,Yes,Low Pressure Limit:,0.00 bar
+High Pressure Limit:,200.00 bar,Max. Flow Ramp Up:,0.100 mL/min²,Primary Channel:,D
+Max. Flow Ramp Down:,0.500 mL/min²,Module Display Name:,Quat. Pump,Module Type:,G7131C
+Order:,1
+Solvent Composition
+Channel,Ch. 1 Solv.,Name 1,Used,Percent
+A,100.0 % Water V.03,MilliQ,Yes,0.00 %
+B,,"H2SO4 0,05M",No,
+C,,SolventLadder,No,
+D,100.0 % Organic V.03,THF,Yes,100.00 %
+4.1,Stroke
+Automatic Stroke Calculation:,Yes
+4.2,Mixer Selection
+Selected Mixer:,Do not use Mixer
+4.3,Blend Assist
+Enabled:,No
+4.4,Stoptime
+Stoptime Mode:,Time set,Stoptime:,22.00 min
+4.5,Posttime
+Posttime Mode:,Off
+5,Multisampler Method
+Module Display Name:,Multisampler,Module Type:,G7137A,Order:,1
+5.1,Sampling Speed
+Draw Speed:,100.0 µL/min,Eject Speed:,400.0 µL/min,Wait Time After Drawing:,1.2 s
+5.2,Injection
+Needle Wash Mode:,Standard Wash,Injection Volume:,20.00 µL
+5.2.1,Standard Needle Wash
+Needle Wash Mode:,Flush Port,Duration:,3 s
+5.3,High Throughput
+Injection Valve to Bypass for Delay Volume Reduction:,No,Sample Flush-Out Factor:,5.0
+5.3.1,Overlapped Injection
+Overlap Injection Enabled:,No
+5.4,Needle Height Position
+Draw Position Offset:,0.0 mm,Use Vial/Well Bottom Sensing:,Yes
+5.5,Stoptime
+Stoptime Mode:,As Pump/No Limit
+5.6,Posttime
+Posttime Mode:,Off
+6,RID Method
+Peakwidth:,> 0.2 min (4 s response time) (2.31 Hz),Signal Polarity:,Positive (+),Auto zero before analysis:,Yes
+Auto. recycling after analysis:,Yes,Acquire Signal A:,Yes,Module Display Name:,RID
+Module Type:,G7162B,Order:,1
+6.1,Analog Output
+Analog Zero Offset:,5 %,Analog Attenuation:,500000 nRIU
+6.2,Optical Unit Temperature
+Temperature Control Mode:,Temperature set,Temperature:,40.00 °C
+6.3,Automatic Purge
+Automatic Purge on:,Yes,Automatic Purge Purgetime:,1.50 min,Automatic Purge Waittime:,1.50 min
+6.4,Stoptime
+Stoptime Mode:,As Pump/Injector
+6.5,Posttime
+Posttime Mode:,Off
+7,Method Properties
+Instrument Technique:,Liquid Chromatography
+8,Schema version
+Schema version:,2.3
+Method Audit Trail
+No method audit trail available
