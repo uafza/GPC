@@ -5,7 +5,6 @@ from collections import defaultdict, Counter
 import numpy as np
 import pubchempy as pcp
 import time
-from gcms_parser import HPLCVisualizer
 import pubchempy as pcp
 from tqdm import tqdm
 
@@ -409,24 +408,111 @@ class HPLCGroupAnalyzer:
         self.samples = samples
         self.rt_tolerance = rt_tolerance
 
+    # -------- convenience: sample lookup by barcode/name --------
+    @staticmethod
+    def _norm_barcode_key(x):
+        s = str(x).strip()
+        # zero-pad pure digits to 10 chars (common barcode format)
+        if s.replace(" ", "").isdigit():
+            s = s.replace(" ", "")
+            try:
+                s = str(int(s)).zfill(10)
+            except Exception:
+                pass
+        return s.lower()
+
+    def get_sample(self, key: str, repeat: int | None = None):
+        """
+        Return the sample dict whose 'barcode' (or descriptive name) matches 'key'.
+        - Matching is case-insensitive; numeric strings are zero-padded to 10 digits.
+        - If repeat is provided, also require sample['repeat'] == repeat.
+        - Returns the first match if multiple repeats exist and repeat is None.
+        - Returns None if not found.
+
+        Examples
+        --------
+        s = analyzer.get_sample('V0 Toluene')
+        s = analyzer.get_sample('4000000020')
+        s = analyzer.get_sample('4000000020', repeat=1)
+        s = analyzer.get_sample('PS-M Blue', repeat=3)
+        """
+        want = self._norm_barcode_key(key)
+        cand = None
+        for s in self.samples:
+            bc = s.get('barcode')
+            if bc is None:
+                continue
+            if self._norm_barcode_key(bc) == want:
+                if repeat is None or int(s.get('repeat', 1)) == int(repeat):
+                    return s
+                # remember first matching barcode in case repeat not found
+                if cand is None:
+                    cand = s
+        return cand
+
     def match_qual_quant(self, sample):
+        """
+        Match QuickReport peaks (or legacy quant_results) to QualResults by nearest RT.
+
+        Inputs from sample dict (as produced by batch_parser):
+          - qual_results: optional DataFrame parsed from QualResults CSV (may be empty)
+          - quickreport:  DataFrame with columns ['Name','rt_min','area']
+
+        Fallback to legacy 'quant_results' if 'quickreport' is missing.
+        """
         qual = sample.get('qual_results', pd.DataFrame()).copy()
-        quant = sample.get('quant_results', pd.DataFrame()).copy()
+        quant = sample.get('quickreport', pd.DataFrame()).copy()
+        if quant.empty:
+            quant = sample.get('quant_results', pd.DataFrame()).copy()
         if qual.empty or quant.empty:
             return qual  # Nothing to match
 
+        # Normalize Qual RT column
+        if 'RT (min)' not in qual.columns and 'RT [min]' in qual.columns:
+            qual = qual.rename(columns={'RT [min]': 'RT (min)'})
         if 'RT (min)' not in qual.columns:
             print(f"qual_results columns: {qual.columns}")
             raise KeyError("qual_results missing 'RT (min)' column")
-        if 'RT [min]' not in quant.columns:
-            print(f"quant_results columns: {quant.columns}")
+
+        # Normalize QuickReport/Quant columns into a common shape
+        q = quant.copy()
+        cols_l = {str(c).strip().lower(): c for c in q.columns}
+        # Map rt column
+        if 'rt [min]' in q.columns:
+            rt_col = 'RT [min]'
+        elif 'rt [min]' in cols_l:  # unlikely
+            rt_col = cols_l['rt [min]']
+        elif 'rt (min)' in q.columns:
+            rt_col = 'RT (min)'
+        elif 'rt (min)' in cols_l:
+            rt_col = cols_l['rt (min)']
+        elif 'rt_min' in cols_l:
+            rt_col = cols_l['rt_min']
+        elif 'rt' in cols_l:
+            rt_col = cols_l['rt']
+        else:
+            # cannot proceed
+            print(f"quant/quickreport missing RT column. Columns: {list(q.columns)}")
             return qual
+
+        # Name and Area columns
+        name_col = cols_l.get('name', next((c for c in q.columns if str(c).strip().lower()=="name"), None))
+        area_col = cols_l.get('area', next((c for c in q.columns if str(c).strip().lower()=="area"), None))
+
+        # Create a canonical view with RT [min]
+        q_can = q.copy()
+        if str(rt_col) != 'RT [min]':
+            q_can = q_can.rename(columns={rt_col: 'RT [min]'})
+        if name_col is not None and str(name_col) != 'Name':
+            q_can = q_can.rename(columns={name_col: 'Name'})
+        if area_col is not None and str(area_col) != 'Area':
+            q_can = q_can.rename(columns={area_col: 'Area'})
 
         # Convert RT columns to numeric and drop NaNs
         qual['RT (min)'] = pd.to_numeric(qual['RT (min)'], errors='coerce')
-        quant['RT [min]'] = pd.to_numeric(quant['RT [min]'], errors='coerce')
+        q_can['RT [min]'] = pd.to_numeric(q_can['RT [min]'], errors='coerce')
         qual_peaks = qual[qual['RT (min)'].notnull()].reset_index(drop=True)
-        quant_peaks = quant[quant['RT [min]'].notnull()].reset_index(drop=True)
+        quant_peaks = q_can[q_can['RT [min]'].notnull()].reset_index(drop=True)
 
         # Only drop summary rows if column exists
         if 'Signal Description' in qual_peaks.columns:
@@ -447,13 +533,204 @@ class HPLCGroupAnalyzer:
             min_idx = diffs.idxmin()
             min_diff = diffs[min_idx]
             if min_diff <= self.rt_tolerance:
-                for col in quant.columns:
+                for col in quant_peaks.columns:
                     merged.loc[min_idx, f'quant_{col}'] = row[col]
         # (Optional) final brute-force filter: only keep rows where RT and Width are real numbers
         merged = merged[pd.to_numeric(merged['RT (min)'], errors='coerce').notnull()]
         if 'Width (min)' in merged.columns:
             merged = merged[pd.to_numeric(merged['Width (min)'], errors='coerce').notnull()]
         return merged
+
+    def align_dad_to_rid_by_peak(
+        self,
+        sample: dict,
+        time_range: tuple,
+        dad_nm: float,
+        *,
+        smoothing: bool = True,
+        smooth_window_pts: int = 7,
+        smooth_method: str = "median",  # 'median' or 'mean'
+        plot: bool = False,
+    ):
+        """
+        Align DAD to RID by matching the biggest peak (by height) within a time window.
+
+        - Keeps RID times unchanged and shifts all DAD channels by a single offset.
+        - Writes aligned DAD to sample['chrom_dad_aligned'] and metadata to
+          sample['alignment'] = {'mode': 'peak', 'window': (tmin, tmax), 'dad_nm': <effective>, 'dt': dt}
+
+        Parameters
+        ----------
+        sample : dict
+            HPLC/GPC sample dict containing 'chrom_rid' and 'chrom_dad' DataFrames (relabelled).
+        time_range : (float, float)
+            Time window in minutes (tmin, tmax) used to find the biggest peak.
+        dad_nm : float
+            Target DAD wavelength (nm); the closest available channel is used.
+        smoothing : bool
+            Apply light smoothing before peak detection.
+        smooth_window_pts : int
+            Rolling window size in points for smoothing.
+        smooth_method : str
+            'median' (default) or 'mean'.
+        plot : bool
+            If True, returns a plotly Figure overlaying RID and DAD in the window with peak markers.
+
+        Returns
+        -------
+        dt : float or None
+            The applied time offset (RID_peak_time - DAD_peak_time). None if alignment failed.
+        fig : plotly.graph_objects.Figure or None
+            Returned only if plot=True; otherwise None.
+        """
+        import re as _re
+
+        rid = sample.get('chrom_rid')
+        dad = sample.get('chrom_dad')
+        if not isinstance(rid, pd.DataFrame) or rid.empty or not isinstance(dad, pd.DataFrame) or dad.empty:
+            return None, None if plot else None
+
+        # Ensure indexes are time in minutes
+        def _ensure_time_index(df: pd.DataFrame) -> pd.DataFrame:
+            if df.index.name is None or 'time' not in str(df.index.name).lower():
+                return df.set_index(df.columns[0])
+            return df
+
+        rid = _ensure_time_index(rid).copy()
+        dad = _ensure_time_index(dad).copy()
+        rid.index = pd.to_numeric(rid.index, errors='coerce')
+        dad.index = pd.to_numeric(dad.index, errors='coerce')
+        # drop rows where index is NaN
+        rid = rid[~pd.isna(rid.index)]
+        dad = dad[~pd.isna(dad.index)]
+
+        # Pick RID series (prefer 'Signal (... )' or single column)
+        rid_col = None
+        for c in rid.columns:
+            cs = str(c)
+            if cs.startswith('Signal (') and cs.endswith(')'):
+                rid_col = c
+                break
+        if rid_col is None and rid.shape[1] == 1:
+            rid_col = rid.columns[0]
+        if rid_col is None:
+            # fallback: first numeric column
+            num_cols = [c for c in rid.columns if pd.api.types.is_numeric_dtype(rid[c])]
+            rid_col = num_cols[0] if num_cols else rid.columns[0]
+
+        # Pick DAD column closest to dad_nm using names like 'Signal 254 nm (...)'
+        dad_cols = []  # list of (wl, col)
+        for c in dad.columns:
+            m = _re.search(r"(?i)signal\s+(\d+(?:\.\d+)?)\s*nm", str(c))
+            if m:
+                try:
+                    dad_cols.append((float(m.group(1)), c))
+                except Exception:
+                    continue
+        effective_nm = None
+        if dad_cols:
+            arr = np.array([w for (w, _) in dad_cols], dtype=float)
+            idx = int(np.argmin(np.abs(arr - float(dad_nm))))
+            effective_nm, dad_col = dad_cols[idx]
+        else:
+            # fallback: single column or first numeric column
+            dad_col = dad.columns[0]
+
+        # Slice to time window
+        tmin, tmax = float(time_range[0]), float(time_range[1])
+        rid_slice = rid.loc[(rid.index >= tmin) & (rid.index <= tmax), rid_col].astype(float)
+        dad_slice = dad.loc[(dad.index >= tmin) & (dad.index <= tmax), dad_col].astype(float)
+        if rid_slice.empty or dad_slice.empty:
+            return None, None if plot else None
+
+        # Optional smoothing
+        if smoothing and smooth_window_pts and smooth_window_pts > 1:
+            win = int(max(1, smooth_window_pts))
+            if smooth_method.lower() == 'mean':
+                rid_s = rid_slice.rolling(window=win, center=True, min_periods=max(1, win // 2)).mean()
+                dad_s = dad_slice.rolling(window=win, center=True, min_periods=max(1, win // 2)).mean()
+            else:  # median
+                rid_s = rid_slice.rolling(window=win, center=True, min_periods=max(1, win // 2)).median()
+                dad_s = dad_slice.rolling(window=win, center=True, min_periods=max(1, win // 2)).median()
+            # fallback to unsmoothed if all-NaN
+            if rid_s.notna().any():
+                rid_slice = rid_s
+            if dad_s.notna().any():
+                dad_slice = dad_s
+
+        # Find peak maxima (by height)
+        try:
+            t_rid_peak = float(rid_slice.idxmax())
+        except Exception:
+            t_rid_peak = None
+        try:
+            t_dad_peak = float(dad_slice.idxmax())
+        except Exception:
+            t_dad_peak = None
+        if t_rid_peak is None or t_dad_peak is None:
+            return None, None if plot else None
+
+        dt = float(t_rid_peak - t_dad_peak)
+
+        # Apply shift to all DAD channels (global offset)
+        dad_aligned = dad.copy()
+        try:
+            new_index = dad_aligned.index.astype(float) + dt
+        except Exception:
+            new_index = pd.to_numeric(dad_aligned.index, errors='coerce') + dt
+        dad_aligned.index = new_index
+        dad_aligned.index.name = rid.index.name or 'Time (min.)'
+
+        # Store results
+        sample['chrom_dad_aligned'] = dad_aligned
+        sample['alignment'] = {
+            'mode': 'peak',
+            'window': (tmin, tmax),
+            'dad_nm': float(effective_nm) if effective_nm is not None else float(dad_nm),
+            'dt': dt,
+        }
+
+        # Optional plot
+        fig = None
+        if plot:
+            try:
+                import plotly.graph_objs as go
+                from plotly.subplots import make_subplots
+                # Dual y-axes: RID on left (primary), DAD on right (secondary)
+                fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+                # Continuous traces
+                fig.add_trace(
+                    go.Scatter(x=rid_slice.index, y=rid_slice.values, mode='lines', name=f'RID: {rid_col}'),
+                    secondary_y=False,
+                )
+                fig.add_trace(
+                    go.Scatter(x=dad_slice.index, y=dad_slice.values, mode='lines', name=f'DAD: {dad_col}'),
+                    secondary_y=True,
+                )
+
+                # Peak markers on their respective axes
+                fig.add_trace(
+                    go.Scatter(x=[t_rid_peak], y=[rid_slice.loc[t_rid_peak]],
+                               mode='markers', name='RID peak', marker=dict(color='red', size=10)),
+                    secondary_y=False,
+                )
+                fig.add_trace(
+                    go.Scatter(x=[t_dad_peak], y=[dad_slice.loc[t_dad_peak]],
+                               mode='markers', name='DAD peak', marker=dict(color='blue', size=10)),
+                    secondary_y=True,
+                )
+
+                fig.update_layout(
+                    title=f"Peak alignment window [{tmin:.3f}, {tmax:.3f}] min | dt={dt:.4f} min",
+                    xaxis_title='Time (min.)',
+                )
+                fig.update_yaxes(title_text='RID (a.u.)', secondary_y=False)
+                fig.update_yaxes(title_text='DAD (a.u.)', secondary_y=True)
+            except Exception:
+                fig = None
+
+        return (dt, fig) if plot else dt
 
     
     def extract_dad_peak_spectra(self, hplc_sample, merged_peaks, rt_shift=-0.043):
@@ -462,16 +739,23 @@ class HPLCGroupAnalyzer:
         Saves list of dicts to hplc_sample['dad_peak_spectra'].
         Each dict contains: {'peak_idx', 'rt', 'width', 'mean_spectrum', 'channels', 'rt_mask'}
         """
-        chrom_dad = hplc_sample.get('chrom_dad')
+        # Prefer aligned DAD when available
+        chrom_dad = hplc_sample.get('chrom_dad_aligned')
+        if (chrom_dad is None) or chrom_dad.empty:
+            chrom_dad = hplc_sample.get('chrom_dad')
         if chrom_dad is None or chrom_dad.empty:
             hplc_sample['dad_peak_spectra'] = []
             return
 
-        # For channel mapping (optional, for readability)
-        method = hplc_sample.get('method', {})
-        channel_map = HPLCVisualizer.get_channel_wavelength_map(method)
+        # Derive wavelengths from column names like 'Signal 254 nm (mAU)'
         channels = list(chrom_dad.columns)
-        wavelengths = [channel_map.get(ch, np.nan) for ch in channels]
+        wavelengths = []
+        for c in channels:
+            m = re.search(r"(?i)signal\s+(\d+(?:\.\d+)?)\s*nm", str(c))
+            try:
+                wavelengths.append(float(m.group(1)) if m else np.nan)
+            except Exception:
+                wavelengths.append(np.nan)
 
         results = []
         for idx, row in merged_peaks.iterrows():
@@ -534,12 +818,21 @@ class HPLCGroupAnalyzer:
         """
         Remove peaks < min_area_percent of total area in this sample's merged table.
         """
-        if merged_df.empty or 'Area' not in merged_df.columns:
+        if merged_df is None or isinstance(merged_df, float) or not isinstance(merged_df, pd.DataFrame) or merged_df.empty:
             return merged_df
-        merged_df['Area'] = pd.to_numeric(merged_df['Area'], errors='coerce').fillna(0)
-        total_area = merged_df['Area'].sum()
-        keep = merged_df['Area'] / total_area * 100 >= min_area_percent if total_area > 0 else False
-    
+        # Prefer Qual 'Area', else Quick/Quant area from merged as 'quant_Area' or 'quant_area'
+        area_col = None
+        if 'Area' in merged_df.columns:
+            area_col = 'Area'
+        elif 'quant_Area' in merged_df.columns:
+            area_col = 'quant_Area'
+        elif 'quant_area' in merged_df.columns:
+            area_col = 'quant_area'
+        if area_col is None:
+            return merged_df
+        area = pd.to_numeric(merged_df[area_col], errors='coerce').fillna(0)
+        total_area = float(area.sum())
+        keep = area / total_area * 100 >= float(min_area_percent) if total_area > 0 else False
         return merged_df[keep]
     
     def align_peaks_by_retention_time(self, rt_tolerance=0.05, peak_table_key='filtered_matched_peaks'):

@@ -1,6 +1,14 @@
 {
   "calibration_set": [
-    "4000000020_r1"
+    "PS-H Blue_r1",
+    "PS-H Red_r1",
+    "PS-H White_r1",
+    "PS-M Blue_r1",
+    "PS-M Red_r1",
+    "PS-M White_r1",
+    "V0 Toluene_r1"
   ],
-  "sample_set": []
+  "sample_set": [
+    "4000000020_r1"
+  ]
 }

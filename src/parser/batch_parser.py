@@ -10,7 +10,7 @@ from parser.chrom_labeling import relabel_chromatograms
 
 
 class HPLCBatchParser:
-    def __init__(self, base_folder, metadata_parser=None):
+    def __init__(self, base_folder, metadata_parser=None, workflow: str = "HPLC"):
         self.base_folder = base_folder
         self.method_folder = os.path.join(base_folder, 'AqMethodReport')
         self.chrom_folder  = os.path.join(base_folder, 'Chromatograms')
@@ -18,6 +18,7 @@ class HPLCBatchParser:
         self.quick_folder  = os.path.join(base_folder, 'QuickReport')    # NEW (replaces Quant_Results)
         self.samples = []
         self.metadata_parser = metadata_parser  # pass your MetadataParser instance
+        self.workflow = str(workflow).upper().strip() if workflow else "HPLC"
 
     def parse_batch(self):
         barcode_versions = dict()
@@ -60,7 +61,11 @@ class HPLCBatchParser:
                             metadata = candidates[0].iloc[0].to_dict()
                         else:
                             metadata = {}
-                    sample['sample_type'] = "hplc_sample"
+                    # Tag sample type based on configured workflow
+                    if self.workflow == "GPC":
+                        sample['sample_type'] = "gpc_sample"
+                    else:
+                        sample['sample_type'] = "hplc_sample"
                     sample['metadata'] = metadata
                     self.samples.append(sample)
         return self.samples
@@ -228,6 +233,7 @@ class HPLCBatchParser:
         if rid_file is None:
             print(f"WARNING: Could not find chromatogram for barcode {barcode} repeat {repeat} (expected inj time {inj_ts})")
         sample['chrom_rid'] = self._safe_read_csv(rid_file)
+        sample['rid_file_path'] = rid_file
 
         # DAD channels
         dad_files = self._find_all_dad_files(self.chrom_folder, barcode, repeat=repeat, inj_ts=inj_ts)
@@ -256,6 +262,15 @@ class HPLCBatchParser:
             relabel_chromatograms(sample)
         except Exception as e:
             print(f"WARNING: relabel_chromatograms failed for {sample.get('barcode')}: {e}")
+
+        # store quick filename and injection timestamp for ordering/grouping in workflows
+        sample['quick_filename'] = quick_filename
+        # if inj_ts missing try derive from RID filename prefix
+        if inj_ts is None and rid_file:
+            m = re.match(r'^(\d{8} \d{6})', os.path.basename(rid_file))
+            if m:
+                inj_ts = m.group(1)
+        sample['inj_ts'] = inj_ts
 
         return sample
 

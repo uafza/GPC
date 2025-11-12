@@ -26,6 +26,10 @@ class HPLCVisualizer:
 
     def __init__(self, samples: List[Dict[str, Any]]):
         self.samples = samples
+        # remember last requested signal mode to allow auto-titling in make_figure
+        self._last_signal: Optional[SignalMode] = None
+        # track effective wavelength chosen from available DAD channels across samples
+        self._effective_wavelength_nm: Optional[float] = None
 
     # ---------- utilities ----------
     @staticmethod
@@ -118,6 +122,9 @@ class HPLCVisualizer:
         robust_scale:
             Use IQR-based amplitude per sample for more stable spacing.
         """
+        # remember requested signal for downstream figure title
+        self._last_signal = signal
+
         if color_cycle is None:
             # plotly qualitative + repeat
             from plotly.colors import qualitative
@@ -131,6 +138,9 @@ class HPLCVisualizer:
 
         subplot_traces: List[Tuple[Any, List[go.Scatter]]] = []
         y_max_by_subplot: List[float] = []
+
+        # collect effective wavelengths seen (for DAD mode)
+        effective_wls: List[float] = []
 
         for subplot_key, sub_samples in sorted(subplot_map.items(), key=lambda kv: str(kv[0])):
             # within each subplot, group by group_keys[1]
@@ -147,10 +157,13 @@ class HPLCVisualizer:
                 for idx, s in enumerate(g_samples):
                     sid = self._unique_sample_id(s)
                     name = str(s.get("barcode", "Sample"))
-                    time, y, label, color = self._extract_series(s, signal, color_cycle[idx % len(color_cycle)])
+                    time, y, label, color, eff_wl = self._extract_series(s, signal, color_cycle[idx % len(color_cycle)])
 
                     if time is None or y is None:
                         continue
+
+                    if eff_wl is not None:
+                        effective_wls.append(float(eff_wl))
 
                     # compute spacing amplitude
                     if robust_scale:
@@ -183,6 +196,17 @@ class HPLCVisualizer:
             subplot_traces.append((subplot_key, traces))
             y_max_by_subplot.append(base_offset)
 
+        # summarize effective wavelength across samples for DAD mode
+        if isinstance(signal, tuple) and len(signal) == 2 and str(signal[0]).upper() == "DAD" and effective_wls:
+            try:
+                arr = np.round(np.array(effective_wls, dtype=float)).astype(int)
+                vals, counts = np.unique(arr, return_counts=True)
+                self._effective_wavelength_nm = float(vals[int(np.argmax(counts))])
+            except Exception:
+                self._effective_wavelength_nm = None
+        else:
+            self._effective_wavelength_nm = None
+
         return subplot_traces, y_max_by_subplot
 
     # ---------- figure creator ----------
@@ -190,12 +214,40 @@ class HPLCVisualizer:
         self,
         subplot_traces: List[Tuple[Any, List[go.Scatter]]],
         *,
-        title: str = "Chromatograms",
+        title: Optional[str] = None,
         x_title: str = "Time (min.)",
         y_title: str = "Signal (offset)",
         height_per_subplot: int = 360,
         width: int = 1400,
     ) -> go.Figure:
+        # Auto-title if not provided, based on the last requested signal in build_traces_grouped
+        if title is None:
+            sig = getattr(self, "_last_signal", None)
+            if sig == "RID":
+                title = "RID Chromatograms"
+            elif isinstance(sig, tuple) and len(sig) == 2 and str(sig[0]).upper() == "DAD":
+                try:
+                    eff = self._effective_wavelength_nm
+                    nm_val = int(round(float(eff))) if eff is not None else int(round(float(sig[1])))
+                    title = f"DAD {nm_val} nm"
+                except Exception:
+                    title = "DAD Chromatograms"
+            else:
+                title = "Chromatograms"
+        else:
+            # If a title is given and the signal is DAD, replace any embedded
+            # 'DAD <number> nm' with the actual requested wavelength to avoid stale titles.
+            sig = getattr(self, "_last_signal", None)
+            if isinstance(sig, tuple) and len(sig) == 2 and str(sig[0]).upper() == "DAD":
+                import re as _re
+                try:
+                    eff = self._effective_wavelength_nm
+                    nm_txt = f"{int(round(float(eff)))}" if eff is not None else f"{int(round(float(sig[1])))}"
+                    title = _re.sub(r"(?i)DAD\s+\d+(?:\.\d+)?\s*nm",
+                                    f"DAD {nm_txt} nm", str(title))
+                except Exception:
+                    pass
+
         n = len(subplot_traces)
         fig = make_subplots(
             rows=n, cols=1, shared_xaxes=True, vertical_spacing=0.06,
@@ -223,17 +275,30 @@ class HPLCVisualizer:
         sample_pad: float = 1.0,
         cmap: str = "Viridis",
         title: str = "All DAD Channels (waterfall heatmap)",
+        width: int = 1200,
+        height_per_band: Optional[int] = None,
+        band_height_fraction: float = 0.05,
+        min_height: int = 300,
     ) -> Optional[go.Figure]:
         """
-        Plot DAD bands stacked per sample (each channel a band). Uses plotly heatmap for interactivity.
+        Plot DAD bands stacked per sample (each channel = one band).
+        - Figure height scales with bands:
+            * If height_per_band is provided: height = height_per_band * number_of_bands
+            * Else: height = band_height_fraction * width * number_of_bands (default keeps prior behavior at 5%)
+          In both cases, min_height caps the minimum height.
+        - Y-axis labeled by wavelength [nm] at the center of each band.
         """
         all_traces: List[go.Heatmap] = []
-        y_ticks = []
-        y_tickpos = []
+        tick_text: List[str] = []
+        tick_pos: List[float] = []
         y_base = 0.0
+        total_bands = 0  # for height calculation
 
-        for i, s in enumerate(self.samples):
-            dad = s.get("chrom_dad")
+        for s in self.samples:
+            # Prefer aligned if available
+            dad = s.get("chrom_dad_aligned")
+            if (not isinstance(dad, pd.DataFrame)) or dad.empty:
+                dad = s.get("chrom_dad")
             if not isinstance(dad, pd.DataFrame) or dad.empty:
                 continue
 
@@ -241,17 +306,15 @@ class HPLCVisualizer:
             if dad.index.name is None or "time" not in str(dad.index.name).lower():
                 dad = dad.set_index(dad.columns[0])
 
-            ch_cols = self._dad_columns(dad)  # sorted (wl, col)
+            # sorted by wavelength: [(wl, colname), ...]
+            ch_cols = self._dad_columns(dad)
             if not ch_cols:
                 continue
 
             times = dad.index.values
-            Z = []
-            for j, (_, col) in enumerate(ch_cols):
-                Z.append(dad[col].to_numpy(dtype=float))
-            Z = np.array(Z, dtype=float)  # shape: (n_ch, n_time)
+            Z = np.array([dad[col].to_numpy(dtype=float) for (_, col) in ch_cols], dtype=float)
 
-            # construct y-coordinates per channel band
+            # y coordinates for each band in this sample
             y_coords = np.arange(Z.shape[0]) + y_base
             all_traces.append(
                 go.Heatmap(
@@ -260,28 +323,41 @@ class HPLCVisualizer:
                     z=Z,
                     colorscale=cmap,
                     colorbar=dict(title="DAD Intensity"),
-                    showscale=(len(all_traces) == 0),  # one colorbar
+                    showscale=(len(all_traces) == 0),  # single colorbar
                 )
             )
-            y_ticks.append(str(s.get("barcode", f"Sample {i+1}")))
-            y_tickpos.append(y_base + (Z.shape[0] - 1) / 2.0)
+
+            # wavelength ticks at the center of each band
+            for j, (wl, _) in enumerate(ch_cols):
+                tick_pos.append(y_base + j + 0.5)
+                tick_text.append(f"{int(round(wl))} nm")
+
+            # advance base for next sample
             y_base += Z.shape[0] + sample_pad
+            total_bands += Z.shape[0] + sample_pad  # count pads as band-heights for final sizing
 
         if not all_traces:
             return None
 
+        # Determine figure height per band
+        if height_per_band is not None:
+            per_band_px = float(height_per_band)
+        else:
+            per_band_px = float(width) * float(band_height_fraction)
+        height = max(int(min_height), int(per_band_px * max(1, total_bands)))
+
         fig = go.Figure(data=all_traces)
         fig.update_layout(
             title=title,
+            width=width,
+            height=height,
             xaxis_title="Time (min.)",
             yaxis=dict(
-                title="Sample",
+                title="Wavelength (nm)",
                 tickmode="array",
-                tickvals=y_tickpos,
-                ticktext=y_ticks,
+                tickvals=tick_pos,
+                ticktext=tick_text,
             ),
-            width=1200,
-            height=max(400, int(70 * y_base)),
         )
         return fig
 
@@ -291,44 +367,47 @@ class HPLCVisualizer:
         sample: Dict[str, Any],
         signal: SignalMode,
         color: str,
-    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], str, str]:
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], str, str, Optional[float]]:
         """
         Returns (time, y, label, color) for requested signal.
         """
         if signal == "RID":
             df = sample.get("chrom_rid")
             if not isinstance(df, pd.DataFrame) or df.empty:
-                return None, None, "", color
+                return None, None, "", color, None
             # ensure time in index
             if df.index.name is None or "time" not in str(df.index.name).lower():
                 df = df.set_index(df.columns[0])
             time = df.index.to_numpy(dtype=float)
             col = self._rid_column(df)
             if col is None:
-                return None, None, "", color
+                return None, None, "", color, None
             y = df[col].to_numpy(dtype=float)
             label = f"{sample.get('barcode','NA')} (RID)"
-            return time, y, label, color
+            return time, y, label, color, None
 
         # DAD @ wavelength
         if isinstance(signal, tuple) and len(signal) == 2 and str(signal[0]).upper() == "DAD":
             target_nm = float(signal[1])
-            df = sample.get("chrom_dad")
+            # Prefer aligned DAD if present
+            df = sample.get("chrom_dad_aligned")
+            if (not isinstance(df, pd.DataFrame)) or df.empty:
+                df = sample.get("chrom_dad")
             if not isinstance(df, pd.DataFrame) or df.empty:
-                return None, None, "", color
+                return None, None, "", color, None
             if df.index.name is None or "time" not in str(df.index.name).lower():
                 df = df.set_index(df.columns[0])
             cols = self._dad_columns(df)  # [(wl, colname), ...]
             if not cols:
-                return None, None, "", color
+                return None, None, "", color, None
             wl_col = self._closest_wavelength(cols, target_nm)
             if wl_col is None:
-                return None, None, "", color
+                return None, None, "", color, None
             wl, colname = wl_col
             time = df.index.to_numpy(dtype=float)
             y = df[colname].to_numpy(dtype=float)
             label = f"{sample.get('barcode','NA')} (DAD {int(round(wl))} nm)"
-            return time, y, label, color
+            return time, y, label, color, float(wl)
 
         # unknown mode
-        return None, None, "", color
+        return None, None, "", color, None
