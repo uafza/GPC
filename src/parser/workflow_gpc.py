@@ -10,6 +10,7 @@ import pandas as pd
 from parser.batch_parser import HPLCBatchParser
 from parser.calibration_parser import GPCCalibrationParser
 from parser.analyze import HPLCGroupAnalyzer
+from parser.method_normalizer import normalize_method_info
 
 # Optional: enable inline display when running in notebooks
 try:  # pragma: no cover
@@ -762,13 +763,12 @@ def run_gpc_on_samples(samples: list[dict], out_dir: str = "results", signal_lab
     """
     Run GPC calibration on a provided list of parsed samples.
     - Tags samples: gpc_calibration / gpc_blank / gpc_sample
-    - Writes per-sample CLBRTN tables and combined calibration file
+    - Writes combined calibration file
     - Optionally displays and saves RID plots with annotations
     """
     out = Path(out_dir)
-    out_cal = out / "calibration" / "per_cal_sample"
-    out_cal.mkdir(parents=True, exist_ok=True)
-    (out / "calibration").mkdir(parents=True, exist_ok=True)
+    cal_dir = out / "calibration"
+    cal_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Loaded {len(samples)} parsed entries.")
 
@@ -821,7 +821,7 @@ def run_gpc_on_samples(samples: list[dict], out_dir: str = "results", signal_lab
     v0s = sorted(v0s, key=lambda x: (x.get("_dt") if pd.notna(x.get("_dt")) else pd.Timestamp.min))
 
     per_tables: list[pd.DataFrame] = []
-    plots_dir = (out / "calibration" / "plots")
+    plots_dir = cal_dir / "plots"
     if plot_calibration:
         plots_dir.mkdir(parents=True, exist_ok=True)
 
@@ -897,8 +897,6 @@ def run_gpc_on_samples(samples: list[dict], out_dir: str = "results", signal_lab
                     pass
 
         per_tables.append(cal_df.assign(_source=name))
-        gpc.write_output(cal_df, str(out_cal / f"{name}_CLBRTN.csv"))
-
         if plot_calibration:
             fig = _rid_plot_with_annotations(s_cal, cal_df, title=f"{name} calibration")
             if fig is not None:
@@ -914,9 +912,10 @@ def run_gpc_on_samples(samples: list[dict], out_dir: str = "results", signal_lab
                     pass
 
     combined = _combine_calibration_rows(per_tables)
+    combined_path = cal_dir / "combined_CLBRTN.csv"
     if not combined.empty:
-        gpc.write_output(combined, str(out / "calibration" / "combined_CLBRTN.csv"))
-        print("Wrote combined calibration ->", out / "calibration" / "combined_CLBRTN.csv")
+        gpc.write_output(combined, str(combined_path))
+        print("Wrote combined calibration ->", combined_path)
     else:
         print("WARNING: No calibration rows found. Combined calibration not written.")
 
@@ -940,14 +939,8 @@ def run_gpc_workflow(base_folder="data", out_dir="results", signal_label="RID", 
     - Builds a combined calibration CSV from calibration_set using GPCCalibrationParser.
     - Writes:
         results/calibration/combined_CLBRTN.csv
-        results/calibration/per_cal_sample/<Sample>_CLBRTN.csv
         results/sets.json   (lists sample names in each set)
     """
-    out = Path(out_dir)
-    out_cal = out / "calibration" / "per_cal_sample"
-    out_cal.mkdir(parents=True, exist_ok=True)
-    (out / "calibration").mkdir(parents=True, exist_ok=True)
-
     # 1) Load via base parser tagged as GPC, then delegate
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -969,7 +962,7 @@ class GPCWorkflow:
       wf.integrate_peaks(plot=True)        # integrate calibration peaks + visualize
       wf.determine_calibration_volumes()   # compute V0/Vc/Ve in mL
       wf.apply_calibration_volumes()       # translate axes to Kav & crop
-      combined = wf.build_calibration_tables()  # write per-sample + combined tables and plots
+      combined = wf.build_calibration_tables()  # build combined tables and plots
 
     Or run all in one go:
       wf = GPCWorkflow(base_folder='data', out_dir='results')
@@ -995,6 +988,7 @@ class GPCWorkflow:
         self.calibration_fit: dict | None = None
         self._calibration_state: dict[str, Any] = {}
         self.peak_metrics: pd.DataFrame = pd.DataFrame()
+        self.MarkHouwinkParameters: dict[str, Any] = {}
 
     def detect_sets(self) -> tuple[int, int]:
         cal, sam = [], []
@@ -1135,8 +1129,6 @@ class GPCWorkflow:
         if not self.calibration_set:
             self.detect_sets()
 
-        out_cal = self.out_dir / "calibration" / "per_cal_sample"
-        out_cal.mkdir(parents=True, exist_ok=True)
         plots_dir = self.out_dir / "calibration" / "plots"
         if plot:
             plots_dir.mkdir(parents=True, exist_ok=True)
@@ -1144,7 +1136,6 @@ class GPCWorkflow:
         entries_sorted = self._sorted_calibration_entries()
         peak_payload = self._collect_calibration_peak_data(
             entries_sorted=entries_sorted,
-            out_cal=out_cal,
             plot=plot,
             overview_fig=None,
         )
@@ -1171,7 +1162,6 @@ class GPCWorkflow:
 
         self._calibration_state = {
             "per_map": peak_payload["per_map"],
-            "output_paths": peak_payload["output_paths"],
             "plot_payloads": peak_payload["plot_payloads"],
             "volume_records": peak_payload["volume_records"],
             "plots_dir": plots_dir,
@@ -1317,7 +1307,6 @@ class GPCWorkflow:
 
         combined = self._finalize_calibration_output(
             per_map=state["per_map"],
-            output_paths=state["output_paths"],
             plots_dir=state.get("plots_dir", self.out_dir / "calibration" / "plots"),
             overview_fig=state.get("overview_fig"),
             plot=state.get("plot_flag", False),
@@ -1369,12 +1358,10 @@ class GPCWorkflow:
         self,
         *,
         entries_sorted: list[dict],
-        out_cal: Path,
         plot: bool,
         overview_fig,
     ) -> dict:
         per_map: dict[str, pd.DataFrame] = {}
-        output_paths: dict[str, Path] = {}
         plot_payloads: list[dict] = []
         volume_records: list[dict] = []
 
@@ -1507,7 +1494,6 @@ class GPCWorkflow:
                 s_cal["peak_integrations"] = peak_payload
 
             per_map[name] = cal_df
-            output_paths[name] = out_cal / f"{name}_CLBRTN.csv"
 
             if isinstance(rid_for_ops, pd.DataFrame) and not rid_for_ops.empty:
                 color = _color_for_sample(name, entry.get("vial_key"))
@@ -1525,7 +1511,6 @@ class GPCWorkflow:
 
         return {
             "per_map": per_map,
-            "output_paths": output_paths,
             "plot_payloads": plot_payloads,
             "volume_records": volume_records,
         }
@@ -2093,7 +2078,6 @@ class GPCWorkflow:
         self,
         *,
         per_map: dict[str, pd.DataFrame],
-        output_paths: dict[str, Path],
         plots_dir: Path,
         overview_fig,
         plot: bool,
@@ -2120,9 +2104,6 @@ class GPCWorkflow:
             else:
                 cal_df["Kav"] = np.nan
             per_tables.append(cal_df.assign(_source=name))
-            out_path = output_paths.get(name)
-            if out_path is not None:
-                self._gpc.write_output(cal_df, str(out_path))
 
         self.calibration_volumes = {
             "V0_mL": global_v0_volume,
@@ -2177,7 +2158,8 @@ class GPCWorkflow:
                                upper_bound_da: float = 2_000_000.0,
                                lower_bound_candidates: tuple[float, float] = (162.0, 200.0),
                                iv_upper_bound: float | None = None,
-                               iv_lower_bound_candidates: tuple[float, ...] = (0.03, 0.05, 0.1)) -> None:
+                               iv_lower_bound_candidates: tuple[float, ...] = (0.03, 0.05, 0.1),
+                               edge_error_pct: float = 5.0) -> None:
         """
         Fit a single calibration curve over the combined calibration table.
         Model: log(value) = a + b * x (exponential decay in MW or IV vs elution axis),
@@ -2187,6 +2169,7 @@ class GPCWorkflow:
         - Tries the provided lower-bound candidates for each quantity, keeps the one with lowest log-RMSE.
         - Stores MW fit in self.calibration_fit (backwards compatible) and both fits in self.calibration_fits.
         - Optional plotting: two subplots per quantity (value/log(value) vs chosen axis) mirroring previous behaviour.
+        - `edge_error_pct` controls the maximum acceptable percentage error at both edges of the fitted window.
         """
         import numpy as _np
         try:
@@ -2210,14 +2193,69 @@ class GPCWorkflow:
         else:
             x_column = "Exp. RT (min)"
             x_label = "Time (min.)"
+        try:
+            edge_error_threshold = float(edge_error_pct)
+        except (TypeError, ValueError):
+            edge_error_threshold = 5.0
+        if edge_error_threshold <= 0:
+            edge_error_threshold = 5.0
+
+        def _to_finite_float(value):
+            try:
+                val = float(value)
+            except (TypeError, ValueError):
+                return None
+            return val if _np.isfinite(val) else None
+
+        def _bound_from_column(column: str) -> float | None:
+            if column in df.columns:
+                series = pd.to_numeric(df[column], errors="coerce").dropna()
+                if not series.empty:
+                    return _to_finite_float(series.iloc[0])
+            return None
+
+        v0_bound = None
+        vc_bound = None
+        cal_volumes = getattr(self, "calibration_volumes", None)
+        if isinstance(cal_volumes, dict):
+            v0_bound = _to_finite_float(cal_volumes.get("V0_mL"))
+            vc_bound = _to_finite_float(cal_volumes.get("Vc_mL"))
+        if v0_bound is None:
+            v0_bound = _bound_from_column("V_0 (mL)")
+        if vc_bound is None:
+            vc_bound = _bound_from_column("V_c (mL)")
+        if not (v0_bound is not None and vc_bound is not None and v0_bound < vc_bound):
+            v0_bound = None
+            vc_bound = None
 
         def _prepare_numeric(column: str) -> pd.DataFrame:
-            if column not in df.columns:
+            if column not in df.columns or x_column not in df.columns:
                 return pd.DataFrame(columns=[x_column, column])
-            data = df[[x_column, column]].copy()
+            extra_cols: list[str] = []
+            supplemental = ["Exp. RT (min)", "Kav", "V_e (mL)", "MW"]
+            for extra in supplemental:
+                if extra == column or extra == x_column:
+                    continue
+                if extra in df.columns and extra not in extra_cols:
+                    extra_cols.append(extra)
+            data = df[[x_column, column, *extra_cols]].copy()
             data[x_column] = pd.to_numeric(data[x_column], errors="coerce")
             data[column] = pd.to_numeric(data[column], errors="coerce")
+            for extra in extra_cols:
+                data[extra] = pd.to_numeric(data[extra], errors="coerce")
+            data["_src_idx"] = data.index
             mask = _np.isfinite(data[x_column]) & _np.isfinite(data[column]) & (data[column] > 0)
+            if v0_bound is not None and vc_bound is not None:
+                ve_vals = None
+                if "V_e (mL)" in data.columns:
+                    ve_vals = pd.to_numeric(data["V_e (mL)"], errors="coerce").to_numpy(dtype=float)
+                elif x_column == "Kav":
+                    span = vc_bound - v0_bound
+                    if span and _np.isfinite(span):
+                        ve_vals = v0_bound + span * data[x_column].to_numpy(dtype=float)
+                if ve_vals is not None:
+                    volume_mask = (ve_vals >= v0_bound) & (ve_vals <= vc_bound)
+                    mask &= volume_mask
             return data[mask]
 
         def _fit_log_curve(value_col: str,
@@ -2239,31 +2277,119 @@ class GPCWorkflow:
                 sub = data[data[value_col] >= float(lb)]
                 if len(sub) < 2:
                     continue
-                x = _np.asarray(sub[x_column], dtype=float)
-                y = _np.asarray(sub[value_col], dtype=float)
-                logy = _np.log(y)
-                X = _np.vstack([_np.ones_like(x), x]).T
-                try:
-                    beta, *_ = _np.linalg.lstsq(X, logy, rcond=None)
-                    a, b = float(beta[0]), float(beta[1])
-                except Exception:
+
+                def _fit_solution(work_df: pd.DataFrame):
+                    if len(work_df) < 2:
+                        return None
+                    x_vals = _np.asarray(work_df[x_column], dtype=float)
+                    y_vals = _np.asarray(work_df[value_col], dtype=float)
+                    logy_vals = _np.log(y_vals)
+                    X_mat = _np.vstack([_np.ones_like(x_vals), x_vals]).T
+                    beta, *_ = _np.linalg.lstsq(X_mat, logy_vals, rcond=None)
+                    a_val, b_val = float(beta[0]), float(beta[1])
+                    logy_hat_vals = a_val + b_val * x_vals
+                    rmse_val = float(_np.sqrt(_np.mean((logy_vals - logy_hat_vals) ** 2)))
+                    rel_err = _np.abs(_np.exp(logy_hat_vals) - y_vals) / y_vals * 100.0
+                    return {
+                        "a": a_val,
+                        "b": b_val,
+                        "logy": logy_vals,
+                        "logy_hat": logy_hat_vals,
+                        "rmse": rmse_val,
+                        "rel_err": rel_err,
+                        "x": x_vals,
+                        "y": y_vals,
+                    }
+
+                def _trim_edges(df_trim: pd.DataFrame):
+                    threshold = edge_error_threshold
+                    work = df_trim.sort_values(x_column).reset_index(drop=True)
+                    while len(work) >= 2:
+                        try:
+                            solution = _fit_solution(work)
+                        except Exception:
+                            return None
+                        if solution is None:
+                            return None
+                        left_err = float(solution["rel_err"][0])
+                        right_err = float(solution["rel_err"][-1])
+                        if left_err <= threshold and right_err <= threshold:
+                            return work, solution, left_err, right_err
+                        trimmed = False
+                        if right_err > left_err and right_err > threshold:
+                            work = work.iloc[:-1].reset_index(drop=True)
+                            trimmed = True
+                        elif left_err > threshold:
+                            work = work.iloc[1:].reset_index(drop=True)
+                            trimmed = True
+                        if not trimmed:
+                            # Cannot improve further without violating threshold
+                            return None
+                    return None
+
+                trimmed = _trim_edges(sub)
+                if trimmed is None:
                     continue
-                logy_hat = a + b * x
-                rmse = float(_np.sqrt(_np.mean((logy - logy_hat) ** 2)))
+                trimmed_df, solution, left_edge_err, right_edge_err = trimmed
+                a = solution["a"]
+                b = solution["b"]
+                logy = solution["logy"]
+                logy_hat = solution["logy_hat"]
+                rmse = solution["rmse"]
+                x = solution["x"]
+                axis_payload = {}
+                payload_cols = {x_column, value_col, "Exp. RT (min)", "Kav", "V_e (mL)", "MW"}
+                for col in payload_cols:
+                    if col in trimmed_df.columns:
+                        try:
+                            axis_payload[col] = pd.to_numeric(trimmed_df[col], errors="coerce").astype(float).tolist()
+                        except Exception:
+                            axis_payload[col] = []
+                src_indices = []
+                if "_src_idx" in trimmed_df.columns:
+                    try:
+                        src_indices = [int(idx) for idx in trimmed_df["_src_idx"].tolist()]
+                    except Exception:
+                        src_indices = []
                 cand = {
                     "a": a,
                     "b": b,
                     "lower_bound": float(lb),
                     "upper_bound": float(upper_bound) if upper_bound is not None else float(data[value_col].max()),
                     "rmse": rmse,
-                    "n": int(len(sub)),
+                    "n": int(len(trimmed_df)),
                     "x_min": float(_np.min(x)),
                     "x_max": float(_np.max(x)),
                     "model": f"log({label}) = a + b * {x_label}",
                     "value_column": value_col,
                     "label": label,
+                    "edge_error_pct": {
+                        "left": left_edge_err,
+                        "right": right_edge_err,
+                    },
+                    "data_points": axis_payload,
+                    "axis_column": x_column,
+                    "source_indices": src_indices,
                 }
-                if (best_fit is None) or (cand["rmse"] < best_fit["rmse"]):
+                def _is_better(candidate: dict, current: dict | None) -> bool:
+                    if current is None:
+                        return True
+                    # Prefer the candidate that keeps the smallest x_min (widest lower range)
+                    cand_min = candidate.get("x_min")
+                    curr_min = current.get("x_min")
+                    if cand_min is not None and curr_min is not None:
+                        if cand_min < curr_min - 1e-12:
+                            return True
+                        if cand_min > curr_min + 1e-12:
+                            return False
+                    # If coverage is equal, prefer more points, then lower RMSE
+                    if candidate.get("n", 0) > current.get("n", 0):
+                        return True
+                    if candidate.get("n", 0) < current.get("n", 0):
+                        return False
+                    return candidate["rmse"] < current["rmse"]
+
+                if _is_better(cand, best_fit):
                     best_fit = cand
 
             if best_fit is None:
@@ -2271,7 +2397,16 @@ class GPCWorkflow:
 
             if upper_bound is not None:
                 try:
-                    base = data[data[value_col] >= best_fit["lower_bound"]].copy()
+                    base_mask = (
+                        (data[value_col] >= best_fit["lower_bound"])
+                        & (pd.to_numeric(data[x_column], errors="coerce") >= best_fit["x_min"])
+                        & (pd.to_numeric(data[x_column], errors="coerce") <= best_fit["x_max"])
+                    )
+                    base = data.loc[base_mask].copy()
+                    if base.empty:
+                        return best_fit
+                    base = base.sort_values(x_column)
+                    base_data = base.copy()
                     xw = _np.asarray(base[x_column], dtype=float)
                     yw = _np.asarray(base[value_col], dtype=float)
                     candidates = data_all[data_all[value_col] > best_fit["upper_bound"]].sort_values(value_col)
@@ -2283,15 +2418,25 @@ class GPCWorkflow:
                             continue
                         pred = float(_np.exp(a + b * rt))
                         perc_err = abs(pred - val) / val * 100.0
-                        if perc_err <= 3.0:
+                        if perc_err <= edge_error_threshold:
                             xw = _np.concatenate([xw, _np.array([rt])])
                             yw = _np.concatenate([yw, _np.array([val])])
+                            base_data = pd.concat([base_data, row.to_frame().T], ignore_index=True)
                             logy = _np.log(yw)
                             Xw = _np.vstack([_np.ones_like(xw), xw]).T
                             beta, *_ = _np.linalg.lstsq(Xw, logy, rcond=None)
                             a, b = float(beta[0]), float(beta[1])
                             logy_hat = a + b * xw
                             rmse = float(_np.sqrt(_np.mean((logy - logy_hat) ** 2)))
+                            rel_err = _np.abs(_np.exp(logy_hat) - yw) / yw * 100.0
+                            order = _np.argsort(xw)
+                            left_err = float(rel_err[order[0]])
+                            right_err = float(rel_err[order[-1]])
+                            if left_err > edge_error_threshold or right_err > edge_error_threshold:
+                                # Revert addition and stop extending
+                                xw = xw[:-1]
+                                yw = yw[:-1]
+                                break
                             best_fit.update({
                                 "a": a,
                                 "b": b,
@@ -2300,9 +2445,30 @@ class GPCWorkflow:
                                 "n": int(len(xw)),
                                 "x_min": float(_np.min(xw)),
                                 "x_max": float(_np.max(xw)),
+                                "edge_error_pct": {
+                                    "left": left_err,
+                                    "right": right_err,
+                                },
                             })
                         else:
                             break
+                    if not base_data.empty:
+                        payload_cols = {x_column, value_col, "Exp. RT (min)", "Kav", "V_e (mL)", "MW"}
+                        axis_payload = {}
+                        for col in payload_cols:
+                            if col in base_data.columns:
+                                try:
+                                    axis_payload[col] = pd.to_numeric(base_data[col], errors="coerce").astype(float).tolist()
+                                except Exception:
+                                    axis_payload[col] = []
+                        src_indices = []
+                        if "_src_idx" in base_data.columns:
+                            try:
+                                src_indices = [int(idx) for idx in base_data["_src_idx"].tolist()]
+                            except Exception:
+                                src_indices = []
+                        best_fit["data_points"] = axis_payload
+                        best_fit["source_indices"] = src_indices
                 except Exception:
                     pass
             return best_fit
@@ -2335,8 +2501,15 @@ class GPCWorkflow:
             xs = _np.linspace(x_min, x_max, 200)
             ys = _np.exp(a + b * xs)
 
-            fig = make_subplots(rows=1, cols=2,
-                                subplot_titles=(f"{y_label} vs {x_label} (combined)", f"{log_y_label} vs {x_label} (combined)"))
+            fig = make_subplots(
+                rows=1,
+                cols=2,
+                subplot_titles=(
+                    f"{y_label} vs {x_label} (combined)",
+                    f"{y_label} vs {x_label} (log scale)",
+                ),
+                horizontal_spacing=0.14,
+            )
             for name, tdf in self.per_calibration_tables.items():
                 if value_col not in tdf.columns:
                     continue
@@ -2356,17 +2529,18 @@ class GPCWorkflow:
                         continue
                     logy = _np.log(y)
                     logy_hat = a + b * x
-                    err = _np.abs(logy - logy_hat)
+                    y_hat = _np.exp(logy_hat)
+                    linear_err = _np.abs(y - y_hat)
                     fig.add_trace(go.Scatter(x=x, y=y, mode="markers", marker=dict(color=color), name=name), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=x, y=logy, mode="markers", marker=dict(color=color),
-                                             error_y=dict(type="data", array=err, visible=True),
+                    fig.add_trace(go.Scatter(x=x, y=y, mode="markers", marker=dict(color=color),
+                                             error_y=dict(type="data", array=linear_err, visible=True),
                                              name=name, showlegend=False), row=1, col=2)
                 except Exception:
                     continue
 
             fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", name="Fit", line=dict(color="#222222", width=2)),
                           row=1, col=1)
-            fig.add_trace(go.Scatter(x=xs, y=(a + b * xs), mode="lines", name="log Fit",
+            fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", name="log Fit",
                                      line=dict(color="#222222", width=2), showlegend=False),
                           row=1, col=2)
             for col_idx in (1, 2):
@@ -2375,7 +2549,16 @@ class GPCWorkflow:
             fig.update_xaxes(title_text=x_label, row=1, col=1)
             fig.update_yaxes(title_text=y_label, row=1, col=1)
             fig.update_xaxes(title_text=x_label, row=1, col=2)
-            fig.update_yaxes(title_text=log_y_label, row=1, col=2)
+            log_axis_title = f"{y_label} (log scale)"
+            fig.update_yaxes(
+                title_text=log_axis_title,
+                type="log",
+                exponentformat="power",
+                dtick=1,
+                minor=dict(ticklen=0),
+                row=1,
+                col=2,
+            )
             ub_val = fit.get("upper_bound")
             lb_str = f"{fit['lower_bound']:.4g}"
             ub_str = f"{ub_val:.4g}" if (ub_val is not None and _np.isfinite(ub_val)) else "n/a"
@@ -2404,6 +2587,7 @@ class GPCWorkflow:
         if iv_fit:
             fits["iv_dl_per_g"] = iv_fit
         self.calibration_fits = fits
+        self._update_mark_houwink_parameters(base_df=df, mw_fit=mw_fit, iv_fit=iv_fit)
 
         if plot:
             _plot_fit_curve(mw_fit, "MW", "MW (Da)", "log(MW)", "combined_fit_mw.html")
@@ -2549,6 +2733,209 @@ class GPCWorkflow:
                         pass
                 except Exception:
                     pass
+
+    def _update_mark_houwink_parameters(self,
+                                        *,
+                                        base_df: pd.DataFrame | None,
+                                        mw_fit: dict | None,
+                                        iv_fit: dict | None) -> None:
+        """
+        Derive Mark-Houwink parameters (K_MA, alpha_MH) for RT, Kav, and Volume scales using the refined IV window.
+        Values are captured for single validation runs only and are not persisted as workflow defaults.
+        """
+        import numpy as _np
+
+        self.MarkHouwinkParameters = {}
+        if base_df is None or base_df.empty or not mw_fit or not iv_fit:
+            return
+
+        data_points = iv_fit.get("data_points") or {}
+        source_indices = iv_fit.get("source_indices") or []
+
+        def _vector_from_points(col: str) -> _np.ndarray:
+            values = data_points.get(col)
+            if values:
+                try:
+                    return _np.asarray(values, dtype=float)
+                except Exception:
+                    return _np.asarray([], dtype=float)
+            if source_indices:
+                try:
+                    subset = base_df.loc[source_indices, col]
+                except Exception:
+                    try:
+                        subset = base_df.reindex(source_indices)[col]
+                    except Exception:
+                        return _np.asarray([], dtype=float)
+                return pd.to_numeric(subset, errors="coerce").to_numpy(dtype=float)
+            return _np.asarray([], dtype=float)
+
+        iv_col = iv_fit.get("value_column") or "iv_dl_per_g"
+        mw_vals = _vector_from_points("MW")
+        iv_vals = _vector_from_points(iv_col)
+        if mw_vals.size == 0 or iv_vals.size == 0:
+            return
+
+        core_mask = (
+            _np.isfinite(mw_vals) & _np.isfinite(iv_vals) & (mw_vals > 0) & (iv_vals > 0)
+        )
+        if core_mask.sum() < 3:
+            return
+
+        axis_configs = [
+            ("Retention Time (min)", "Exp. RT (min)"),
+            ("Kav", "Kav"),
+            ("Elution Volume (mL)", "V_e (mL)"),
+        ]
+        axis_results: dict[str, dict] = {}
+
+        def _fit_linear(axis_vec: _np.ndarray, response: _np.ndarray):
+            X = _np.vstack([_np.ones_like(axis_vec), axis_vec]).T
+            beta, *_ = _np.linalg.lstsq(X, response, rcond=None)
+            pred = beta[0] + beta[1] * axis_vec
+            rmse = float(_np.sqrt(_np.mean((response - pred) ** 2)))
+            return float(beta[0]), float(beta[1]), rmse
+
+        for axis_label, axis_col in axis_configs:
+            axis_vals = _vector_from_points(axis_col)
+            if axis_vals.size == 0:
+                continue
+            mask = core_mask & _np.isfinite(axis_vals)
+            if mask.sum() < 3:
+                continue
+            axis_subset = axis_vals[mask]
+            log_mw = _np.log(mw_vals[mask])
+            log_iv = _np.log(iv_vals[mask])
+            a_m, b_m, rmse_m = _fit_linear(axis_subset, log_mw)
+            if abs(b_m) < 1e-12:
+                continue
+            a_iv, b_iv, rmse_iv = _fit_linear(axis_subset, log_iv)
+            alpha = b_iv / b_m
+            log_k = a_iv - alpha * a_m
+            K = float(_np.exp(log_k))
+            axis_results[axis_label] = {
+                "K_MA": K,
+                "alpha_MH": float(alpha),
+                "axis_column": axis_col,
+                "n_points": int(axis_subset.size),
+                "axis_range": [
+                    float(_np.min(axis_subset)),
+                    float(_np.max(axis_subset)),
+                ],
+                "mw_range": [
+                    float(_np.min(mw_vals[mask])),
+                    float(_np.max(mw_vals[mask])),
+                ],
+                "iv_range": [
+                    float(_np.min(iv_vals[mask])),
+                    float(_np.max(iv_vals[mask])),
+                ],
+                "log_mw_vs_axis_rmse": rmse_m,
+                "log_iv_vs_axis_rmse": rmse_iv,
+                "model": "IV = K * M_MH^{alpha_MH}",
+            }
+
+        method_context = self._derive_method_context()
+
+        self.MarkHouwinkParameters = {
+            "model": "IV = K * M_MH^{alpha_MH}",
+            "method_context": method_context,
+            "axes": axis_results,
+        }
+        self._write_mark_houwink_parameters()
+
+    def _derive_method_context(self) -> dict[str, Any] | None:
+        """
+        Inspect sample method metadata to extract real instrument context (flowing channel, oven temp, flow).
+        """
+        def _method_context_from_sample(sample: dict[str, Any]) -> dict[str, Any] | None:
+            if not isinstance(sample, dict):
+                return None
+            method_norm = sample.get("method_norm")
+            if not isinstance(method_norm, dict):
+                method_struct = sample.get("method_struct") or sample.get("method")
+                if method_struct:
+                    try:
+                        method_norm = normalize_method_info(method_struct)
+                    except Exception:
+                        method_norm = None
+            if not isinstance(method_norm, dict):
+                return None
+            pump = method_norm.get("pump", {}) or {}
+            oven = method_norm.get("oven", {}) or {}
+            meta = method_norm.get("meta", {}) or {}
+
+            flow_rate = pump.get("flow_ml_min")
+            try:
+                flow_rate = float(flow_rate) if flow_rate is not None else None
+            except Exception:
+                flow_rate = None
+
+            primary_channel = (pump.get("primary_channel") or "").strip() or None
+            solvents = pump.get("solvents") or {}
+
+            channel_name = None
+            channel_key = primary_channel
+            if primary_channel and isinstance(solvents, dict):
+                entry = solvents.get(primary_channel, {})
+                if isinstance(entry, dict):
+                    channel_name = entry.get("name") or primary_channel
+            if not channel_name and isinstance(solvents, dict) and solvents:
+                best_key = None
+                best_info = None
+                best_pct = None
+                for key, info in solvents.items():
+                    if not isinstance(info, dict):
+                        continue
+                    pct = info.get("percent")
+                    if pct is not None:
+                        try:
+                            pct_val = float(pct)
+                        except Exception:
+                            pct_val = None
+                    else:
+                        pct_val = None
+                    if best_info is None:
+                        best_key, best_info, best_pct = key, info, pct_val
+                        continue
+                    if pct_val is None and best_pct is None:
+                        continue
+                    if best_pct is None or (pct_val is not None and pct_val > best_pct):
+                        best_key, best_info, best_pct = key, info, pct_val
+                if best_info:
+                    channel_key = best_key
+                    channel_name = best_info.get("name") or best_key
+            if not channel_name and channel_key:
+                channel_name = channel_key
+
+            oven_temp = oven.get("temperature_c")
+            try:
+                oven_temp = float(oven_temp) if oven_temp is not None else None
+            except Exception:
+                oven_temp = None
+
+            return {
+                "flowing_channel": channel_name,
+                "flow_channel_key": channel_key,
+                "flow_rate_mL_min": flow_rate,
+                "oven_temperature_C": oven_temp,
+            }
+
+        for sample in self.samples or []:
+            ctx = _method_context_from_sample(sample)
+            if ctx:
+                return ctx
+        return None
+
+    def _write_mark_houwink_parameters(self) -> None:
+        if not getattr(self, "MarkHouwinkParameters", None):
+            return
+        try:
+            output_path = self.out_dir / "MarkHouwinkParameters.json"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(self.MarkHouwinkParameters, indent=2))
+        except Exception:
+            pass
 
     # ---- Step 4: add MW index column to chromatograms ----
     def add_mw_index_to_chromatograms(self, column_name: str = "MW PS Equivalent (Da)") -> None:

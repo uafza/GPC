@@ -1,0 +1,30 @@
+# Bytecode / caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Environments
+.env
+.venv/
+env/
+venv/
+pip-wheel-metadata/
+
+# Editors / tooling
+.vscode/
+.idea/
+
+# Data + outputs (regenerate locally)
+data/
+results/
+*.html
+*.png
+
+# Jupyter + analysis cruft
+.ipynb_checkpoints/
+*.log
+
+# OS noise
+.DS_Store
+Thumbs.db
