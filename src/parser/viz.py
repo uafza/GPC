@@ -109,8 +109,8 @@ class HPLCVisualizer:
         Parameters
         ----------
         signal:
-            "RID"  -> use sample['chrom_rid'] with its single 'Signal (unit)' column
-            ("DAD", 230.0) -> use sample['chrom_dad'] column closest to that wavelength [nm]
+            "RID"  -> prefer sample['chrom_rid_baseline_corrected'] (fallback to 'chrom_rid')
+            ("DAD", 230.0) -> prefer baseline/aligned DAD column closest to that wavelength [nm]
         group_keys:
             (subplot_key_path, group_key_path) dotted keys within sample dict.
             Example: ("sample_type", "metadata.Sample Name")
@@ -295,8 +295,10 @@ class HPLCVisualizer:
         total_bands = 0  # for height calculation
 
         for s in self.samples:
-            # Prefer aligned if available
-            dad = s.get("chrom_dad_aligned")
+            # Prefer processed versions (baseline -> aligned -> raw)
+            dad = s.get("chrom_dad_baseline_corrected")
+            if (not isinstance(dad, pd.DataFrame)) or dad.empty:
+                dad = s.get("chrom_dad_aligned")
             if (not isinstance(dad, pd.DataFrame)) or dad.empty:
                 dad = s.get("chrom_dad")
             if not isinstance(dad, pd.DataFrame) or dad.empty:
@@ -372,7 +374,9 @@ class HPLCVisualizer:
         Returns (time, y, label, color) for requested signal.
         """
         if signal == "RID":
-            df = sample.get("chrom_rid")
+            df = sample.get("chrom_rid_baseline_corrected")
+            if (not isinstance(df, pd.DataFrame)) or df.empty:
+                df = sample.get("chrom_rid")
             if not isinstance(df, pd.DataFrame) or df.empty:
                 return None, None, "", color, None
             # ensure time in index
@@ -389,8 +393,10 @@ class HPLCVisualizer:
         # DAD @ wavelength
         if isinstance(signal, tuple) and len(signal) == 2 and str(signal[0]).upper() == "DAD":
             target_nm = float(signal[1])
-            # Prefer aligned DAD if present
-            df = sample.get("chrom_dad_aligned")
+            # Prefer processed DAD if present
+            df = sample.get("chrom_dad_baseline_corrected")
+            if (not isinstance(df, pd.DataFrame)) or df.empty:
+                df = sample.get("chrom_dad_aligned")
             if (not isinstance(df, pd.DataFrame)) or df.empty:
                 df = sample.get("chrom_dad")
             if not isinstance(df, pd.DataFrame) or df.empty:

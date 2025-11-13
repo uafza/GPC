@@ -67,7 +67,11 @@ class HPLCGroupAnalyzer:
         Saves list of dicts to hplc_sample['dad_peak_spectra'].
         Each dict contains: {'peak_idx', 'rt', 'width', 'mean_spectrum', 'channels', 'rt_mask'}
         """
-        chrom_dad = hplc_sample.get('chrom_dad')
+        chrom_dad = hplc_sample.get('chrom_dad_baseline_corrected')
+        if not isinstance(chrom_dad, pd.DataFrame) or chrom_dad.empty:
+            chrom_dad = hplc_sample.get('chrom_dad_aligned')
+        if not isinstance(chrom_dad, pd.DataFrame) or chrom_dad.empty:
+            chrom_dad = hplc_sample.get('chrom_dad')
         if chrom_dad is None or chrom_dad.empty:
             hplc_sample['dad_peak_spectra'] = []
             return
