@@ -589,15 +589,17 @@ class GPCWorkflow:
     # ---- Step 3: fit calibration curves (exp decay) ----
     def fit_calibration_curves(self, plot: bool = False,
                                upper_bound_da: float = 2_000_000.0,
-                               lower_bound_candidates: tuple[float, float] = (162.0, 200.0)) -> None:
+                               lower_bound_candidates: tuple[float, float] = (162.0, 200.0),
+                               iv_upper_bound: float | None = None,
+                               iv_lower_bound_candidates: tuple[float, ...] = (0.03, 0.05, 0.1)) -> None:
         """
         Fit a single calibration curve over the combined calibration table.
-        Model: log(MW) = a + b * RT (exponential decay in MW vs RT).
-        - Filters to MW <= upper_bound_da and MW >= chosen lower bound.
-        - Tries lower bounds (162, 200) and selects the one with lower RMSE (log-space).
-        - Stores result in self.calibration_fit.
-        - Optional plotting: two subplots (MW vs RT, log(MW) vs RT) with fitted curve,
-          residual error bars on log plot, and vertical dashed lines at RT bounds.
+        Model: log(value) = a + b * RT (exponential decay in MW or IV vs RT).
+        - For MW (Mp): filters to MW <= upper_bound_da and MW >= chosen lower bound.
+        - For IV: filters to supplied upper bound (optional) and lower bound candidates.
+        - Tries the provided lower-bound candidates for each quantity, keeps the one with lowest log-RMSE.
+        - Stores MW fit in self.calibration_fit (backwards compatible) and both fits in self.calibration_fits.
+        - Optional plotting: two subplots per quantity (value vs RT, log(value) vs RT) mirroring previous behaviour.
         """
         import numpy as _np
         try:
@@ -615,152 +617,203 @@ class GPCWorkflow:
             self.calibration_fit = None
             return
 
-        # Select rows with MW (exclude V0) and apply bounds
-        tbl = df.copy()
-        tbl = tbl[~tbl['MW'].astype(str).eq("")].copy()
-        tbl['MW'] = _np.asarray(tbl['MW'], dtype=float)
-        tbl['Exp. RT (min)'] = _np.asarray(tbl['Exp. RT (min)'], dtype=float)
-        tbl = tbl[_np.isfinite(tbl['MW']) & (tbl['MW'] <= float(upper_bound_da))]
-        if tbl.empty:
-            self.calibration_fit = None
-            return
+        def _prepare_numeric(column: str) -> pd.DataFrame:
+            if column not in df.columns:
+                return pd.DataFrame(columns=["Exp. RT (min)", column])
+            data = df[["Exp. RT (min)", column]].copy()
+            data["Exp. RT (min)"] = pd.to_numeric(data["Exp. RT (min)"], errors="coerce")
+            data[column] = pd.to_numeric(data[column], errors="coerce")
+            mask = _np.isfinite(data["Exp. RT (min)"]) & _np.isfinite(data[column]) & (data[column] > 0)
+            return data[mask]
 
-        best = None
-        for lb in lower_bound_candidates:
-            sub = tbl[tbl['MW'] >= float(lb)].copy()
-            if len(sub) < 2:
-                continue
-            x = _np.asarray(sub['Exp. RT (min)'], dtype=float)
-            y = _np.asarray(sub['MW'], dtype=float)
-            logy = _np.log(y)
-            X = _np.vstack([_np.ones_like(x), x]).T
-            try:
-                beta, *_ = _np.linalg.lstsq(X, logy, rcond=None)
-                a, b = float(beta[0]), float(beta[1])
-            except Exception:
-                continue
-            logy_hat = a + b * x
-            rmse = float(_np.sqrt(_np.mean((logy - logy_hat)**2)))
-            cand = {
-                'a': a, 'b': b,
-                'lower_bound': float(lb), 'upper_bound': float(upper_bound_da),
-                'rmse': rmse,
-                'n': int(len(sub)),
-                'rt_min': float(_np.min(x)), 'rt_max': float(_np.max(x)),
-                'model': 'logMW = a + b * RT',
-            }
-            if (best is None) or (cand['rmse'] < best['rmse']):
-                best = cand
-
-        # Attempt to extend upper bound by admitting higher-MW points with small percent error
-        if best is not None:
-            try:
-                # base dataset at chosen lower bound (initial UB already applied in tbl)
-                base = tbl[tbl['MW'] >= best['lower_bound']].copy()
-                xw = _np.asarray(base['Exp. RT (min)'], dtype=float)
-                yw = _np.asarray(base['MW'], dtype=float)
-                # candidates from the full combined table above current UB, sorted by MW ascending
-                all_tbl = df.copy()
-                all_tbl = all_tbl[~all_tbl['MW'].astype(str).eq("")].copy()
-                all_tbl['MW'] = _np.asarray(all_tbl['MW'], dtype=float)
-                all_tbl['Exp. RT (min)'] = _np.asarray(all_tbl['Exp. RT (min)'], dtype=float)
-                candidates = all_tbl[_np.isfinite(all_tbl['MW']) & (all_tbl['MW'] > best['upper_bound'])]
-                candidates = candidates.sort_values('MW')
-                # current fit params
-                a, b = best['a'], best['b']
-                for _, row in candidates.iterrows():
-                    rt = float(row['Exp. RT (min)']); mw = float(row['MW'])
-                    if not _np.isfinite(rt) or not _np.isfinite(mw) or mw <= 0:
-                        continue
-                    mw_hat = float(_np.exp(a + b * rt))
-                    perc_err = abs(mw_hat - mw) / mw * 100.0
-                    if perc_err <= 3.0:
-                        # include point and refit in log-space
-                        xw = _np.concatenate([xw, _np.array([rt])])
-                        yw = _np.concatenate([yw, _np.array([mw])])
-                        logy = _np.log(yw)
-                        Xw = _np.vstack([_np.ones_like(xw), xw]).T
-                        beta, *_ = _np.linalg.lstsq(Xw, logy, rcond=None)
-                        a, b = float(beta[0]), float(beta[1])
-                        logy_hat = a + b * xw
-                        rmse = float(_np.sqrt(_np.mean((logy - logy_hat)**2)))
-                        best.update({
-                            'a': a, 'b': b,
-                            'upper_bound': mw,
-                            'rmse': rmse,
-                            'n': int(len(xw)),
-                            'rt_min': float(_np.min(xw)), 'rt_max': float(_np.max(xw)),
-                        })
-                    else:
-                        break
-            except Exception:
-                pass
-
-        self.calibration_fit = best
-        self.calibration_fits = {'combined': best} if best is not None else {}
-
-        # Plotting for combined fit (include all points, even outside fit bounds)
-        if plot and best is not None and go is not None and make_subplots is not None:
-            a, b = best['a'], best['b']
-            lb, ub = best['lower_bound'], best['upper_bound']
-            # establish x-range for fitted curve from all points
-            x_all = []
-            for _, tdf in self.per_calibration_tables.items():
-                t = _np.asarray(tdf[~tdf['MW'].astype(str).eq("")]['Exp. RT (min)'], dtype=float)
-                t = t[_np.isfinite(t)]
-                if t.size:
-                    x_all.append((t.min(), t.max()))
-            if x_all:
-                x_min = float(min(v[0] for v in x_all)); x_max = float(max(v[1] for v in x_all))
+        def _fit_log_curve(value_col: str,
+                           label: str,
+                           upper_bound: float | None,
+                           lower_candidates: tuple[float, ...] | None) -> dict | None:
+            data_all = _prepare_numeric(value_col)
+            if data_all.empty:
+                return None
+            if upper_bound is not None:
+                data = data_all[data_all[value_col] <= float(upper_bound)]
             else:
-                x_min = float(best['rt_min']); x_max = float(best['rt_max'])
+                data = data_all.copy()
+            if data.empty:
+                return None
+            lb_candidates = lower_candidates if lower_candidates else (float(data[value_col].min()),)
+            best_fit = None
+            for lb in lb_candidates:
+                sub = data[data[value_col] >= float(lb)]
+                if len(sub) < 2:
+                    continue
+                x = _np.asarray(sub["Exp. RT (min)"], dtype=float)
+                y = _np.asarray(sub[value_col], dtype=float)
+                logy = _np.log(y)
+                X = _np.vstack([_np.ones_like(x), x]).T
+                try:
+                    beta, *_ = _np.linalg.lstsq(X, logy, rcond=None)
+                    a, b = float(beta[0]), float(beta[1])
+                except Exception:
+                    continue
+                logy_hat = a + b * x
+                rmse = float(_np.sqrt(_np.mean((logy - logy_hat) ** 2)))
+                cand = {
+                    "a": a,
+                    "b": b,
+                    "lower_bound": float(lb),
+                    "upper_bound": float(upper_bound) if upper_bound is not None else float(data[value_col].max()),
+                    "rmse": rmse,
+                    "n": int(len(sub)),
+                    "rt_min": float(_np.min(x)),
+                    "rt_max": float(_np.max(x)),
+                    "model": f"log({label}) = a + b * RT",
+                    "value_column": value_col,
+                    "label": label,
+                }
+                if (best_fit is None) or (cand["rmse"] < best_fit["rmse"]):
+                    best_fit = cand
+
+            if best_fit is None:
+                return None
+
+            if upper_bound is not None:
+                try:
+                    base = data[data[value_col] >= best_fit["lower_bound"]].copy()
+                    xw = _np.asarray(base["Exp. RT (min)"], dtype=float)
+                    yw = _np.asarray(base[value_col], dtype=float)
+                    candidates = data_all[data_all[value_col] > best_fit["upper_bound"]].sort_values(value_col)
+                    a, b = best_fit["a"], best_fit["b"]
+                    for _, row in candidates.iterrows():
+                        rt = float(row["Exp. RT (min)"])
+                        val = float(row[value_col])
+                        if not _np.isfinite(rt) or not _np.isfinite(val) or val <= 0:
+                            continue
+                        pred = float(_np.exp(a + b * rt))
+                        perc_err = abs(pred - val) / val * 100.0
+                        if perc_err <= 3.0:
+                            xw = _np.concatenate([xw, _np.array([rt])])
+                            yw = _np.concatenate([yw, _np.array([val])])
+                            logy = _np.log(yw)
+                            Xw = _np.vstack([_np.ones_like(xw), xw]).T
+                            beta, *_ = _np.linalg.lstsq(Xw, logy, rcond=None)
+                            a, b = float(beta[0]), float(beta[1])
+                            logy_hat = a + b * xw
+                            rmse = float(_np.sqrt(_np.mean((logy - logy_hat) ** 2)))
+                            best_fit.update({
+                                "a": a,
+                                "b": b,
+                                "upper_bound": val,
+                                "rmse": rmse,
+                                "n": int(len(xw)),
+                                "rt_min": float(_np.min(xw)),
+                                "rt_max": float(_np.max(xw)),
+                            })
+                        else:
+                            break
+                except Exception:
+                    pass
+            return best_fit
+
+        def _plot_fit_curve(fit: dict | None,
+                            value_col: str,
+                            y_label: str,
+                            log_y_label: str,
+                            html_name: str) -> None:
+            if not fit or go is None or make_subplots is None:
+                return
+            a, b = fit["a"], fit["b"]
+            # Determine plotting range
+            x_ranges = []
+            for _, tdf in self.per_calibration_tables.items():
+                if value_col not in tdf.columns:
+                    continue
+                times = pd.to_numeric(tdf["Exp. RT (min)"], errors="coerce")
+                vals = pd.to_numeric(tdf[value_col], errors="coerce")
+                mask = _np.isfinite(times) & _np.isfinite(vals) & (vals > 0)
+                if mask.any():
+                    arr = times[mask].to_numpy(dtype=float)
+                    x_ranges.append((arr.min(), arr.max()))
+            if x_ranges:
+                x_min = float(min(v[0] for v in x_ranges))
+                x_max = float(max(v[1] for v in x_ranges))
+            else:
+                x_min = float(fit["rt_min"])
+                x_max = float(fit["rt_max"])
             xs = _np.linspace(x_min, x_max, 200)
             ys = _np.exp(a + b * xs)
 
-            fig = make_subplots(rows=1, cols=2, subplot_titles=("MW vs RT (combined)", "log(MW) vs RT (combined)"))
-            # add per-sample points with consistent colors on both subplots
+            fig = make_subplots(rows=1, cols=2,
+                                subplot_titles=(f"{y_label} vs RT (combined)", f"{log_y_label} vs RT (combined)"))
             for name, tdf in self.per_calibration_tables.items():
+                if value_col not in tdf.columns:
+                    continue
                 try:
-                    # Determine color from sample name/vial
                     vial_key = None
                     for e in self.calibration_set:
-                        if e['name'] == name:
-                            vial_key = e.get('vial_key'); break
+                        if e["name"] == name:
+                            vial_key = e.get("vial_key")
+                            break
                     color = _color_for_sample(name, vial_key)
-                    sub = tdf[~tdf['MW'].astype(str).eq("")].copy()
-                    x = _np.asarray(sub['Exp. RT (min)'], dtype=float)
-                    y = _np.asarray(sub['MW'], dtype=float)
-                    mask = _np.isfinite(x) & _np.isfinite(y) & (y > 0)
-                    x = x[mask]; y = y[mask]
+                    times = pd.to_numeric(tdf["Exp. RT (min)"], errors="coerce")
+                    vals = pd.to_numeric(tdf[value_col], errors="coerce")
+                    mask = _np.isfinite(times) & _np.isfinite(vals) & (vals > 0)
+                    x = times[mask].to_numpy(dtype=float)
+                    y = vals[mask].to_numpy(dtype=float)
                     if x.size == 0:
                         continue
                     logy = _np.log(y)
                     logy_hat = a + b * x
                     err = _np.abs(logy - logy_hat)
-                    # left (linear MW)
-                    fig.add_trace(go.Scatter(x=x, y=y, mode='markers', marker=dict(color=color), name=name), row=1, col=1)
-                    # right (log MW) with error bars
-                    fig.add_trace(go.Scatter(x=x, y=logy, mode='markers', marker=dict(color=color),
-                                             error_y=dict(type='data', array=err, visible=True),
+                    fig.add_trace(go.Scatter(x=x, y=y, mode="markers", marker=dict(color=color), name=name), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=x, y=logy, mode="markers", marker=dict(color=color),
+                                             error_y=dict(type="data", array=err, visible=True),
                                              name=name, showlegend=False), row=1, col=2)
                 except Exception:
                     continue
-            # fitted curve overlay
-            fig.add_trace(go.Scatter(x=xs, y=ys, mode='lines', name='Fit', line=dict(color='#222222', width=2)), row=1, col=1)
-            fig.add_trace(go.Scatter(x=xs, y=(a + b * xs), mode='lines', name='log Fit', line=dict(color='#222222', width=2), showlegend=False), row=1, col=2)
-            for col in (1, 2):
-                for bound in (best['rt_min'], best['rt_max']):
-                    fig.add_vline(x=bound, line_width=1, line_dash='dash', line_color='gray', row=1, col=col)
-            fig.update_xaxes(title_text='Time (min.)', row=1, col=1)
-            fig.update_yaxes(title_text='MW (Da)', row=1, col=1)
-            fig.update_xaxes(title_text='Time (min.)', row=1, col=2)
-            fig.update_yaxes(title_text='log(MW)', row=1, col=2)
-            fig.update_layout(title=f"Combined calibration fit | lower={int(lb)} Da, upper={int(ub)} Da | rmse={best['rmse']:.4f}")
+
+            fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", name="Fit", line=dict(color="#222222", width=2)),
+                          row=1, col=1)
+            fig.add_trace(go.Scatter(x=xs, y=(a + b * xs), mode="lines", name="log Fit",
+                                     line=dict(color="#222222", width=2), showlegend=False),
+                          row=1, col=2)
+            for col_idx in (1, 2):
+                for bound in (fit["rt_min"], fit["rt_max"]):
+                    fig.add_vline(x=bound, line_width=1, line_dash="dash", line_color="gray", row=1, col=col_idx)
+            fig.update_xaxes(title_text="Time (min.)", row=1, col=1)
+            fig.update_yaxes(title_text=y_label, row=1, col=1)
+            fig.update_xaxes(title_text="Time (min.)", row=1, col=2)
+            fig.update_yaxes(title_text=log_y_label, row=1, col=2)
+            ub_val = fit.get("upper_bound")
+            lb_str = f"{fit['lower_bound']:.4g}"
+            ub_str = f"{ub_val:.4g}" if (ub_val is not None and _np.isfinite(ub_val)) else "n/a"
+            fig.update_layout(title=f"{y_label} calibration fit | lower={lb_str} | upper={ub_str} | rmse={fit['rmse']:.4f}")
             try:
                 if _ipython_display is not None:
                     _ipython_display(fig)
             except Exception:
                 pass
+            try:
+                import plotly.io as pio
+                plots_dir = self.out_dir / "calibration" / "fit_plots"
+                plots_dir.mkdir(parents=True, exist_ok=True)
+                pio.write_html(fig, str(plots_dir / html_name), include_plotlyjs="cdn", auto_open=False)
+            except Exception:
+                pass
+
+        mw_fit = _fit_log_curve("MW", "MW (Da)", upper_bound_da, lower_bound_candidates)
+        iv_fit = _fit_log_curve("iv_dl_per_g", "IV (dL/g)", iv_upper_bound, iv_lower_bound_candidates)
+
+        self.calibration_fit = mw_fit
+        fits: dict[str, dict] = {}
+        if mw_fit:
+            fits["combined"] = mw_fit
+            fits["mw"] = mw_fit
+        if iv_fit:
+            fits["iv_dl_per_g"] = iv_fit
+        self.calibration_fits = fits
+
+        if plot:
+            _plot_fit_curve(mw_fit, "MW", "MW (Da)", "log(MW)", "combined_fit_mw.html")
+            _plot_fit_curve(iv_fit, "iv_dl_per_g", "IV (dL/g)", "log(IV)", "combined_fit_iv.html")
 
         # ---- Area vs Mass linear calibration (robust to outliers) ----
         # Build combined dataset of (Mass, Peak Area) with sample names

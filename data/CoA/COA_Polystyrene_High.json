@@ -1,0 +1,151 @@
+{
+  "metadata": {
+    "Product": [
+      "Polystyrene High EasiVials (2ml)"
+    ],
+    "Part Numbers": [
+      "PL2010-0201 ",
+      "PL2010-0202"
+    ],
+    "Batch Number": [
+      "6851361"
+    ]
+  },
+  "table": [
+    {
+      "Vial Code": "-",
+      "IV": "dL/g",
+      "MW": "g/mol (light scattering)",
+      "Mn": "g/mol",
+      "Mw": "g/mol",
+      "Mw/Mn": "-",
+      "Mp": "g/mol",
+      "Mass": "mg"
+    },
+    {
+      "Vial Code": "Red",
+      "IV": "6.7686",
+      "MW": "5125000",
+      "Mn": "5625000",
+      "Mw": "5990000",
+      "Mw/Mn": "1.06",
+      "Mp": "6085000",
+      "Mass": "0.4"
+    },
+    {
+      "Vial Code": "Red",
+      "IV": "1.1996",
+      "MW": "440000",
+      "Mn": "443500",
+      "Mw": "464500",
+      "Mw/Mn": "1.05",
+      "Mp": "474500",
+      "Mass": "0.8"
+    },
+    {
+      "Vial Code": "Red",
+      "IV": "0.1415",
+      "MW": "21770",
+      "Mn": "19890",
+      "Mw": "20550",
+      "Mw/Mn": "1.03",
+      "Mp": "20140",
+      "Mass": "1.2"
+    },
+    {
+      "Vial Code": "Red",
+      "IV": "0.0329",
+      "MW": "1360",
+      "Mn": "1090",
+      "Mw": "1160",
+      "Mw/Mn": "1.07",
+      "Mp": "1180",
+      "Mass": "1.6"
+    },
+    {
+      "Vial Code": "White",
+      "IV": "4.6402",
+      "MW": "2666000",
+      "Mn": "2564000",
+      "Mw": "2705000",
+      "Mw/Mn": "1.06",
+      "Mp": "2811000",
+      "Mass": "0.4"
+    },
+    {
+      "Vial Code": "White",
+      "IV": "0.6383",
+      "MW": "179600",
+      "Mn": "175500",
+      "Mw": "185800",
+      "Mw/Mn": "1.06",
+      "Mp": "182200",
+      "Mass": "0.8"
+    },
+    {
+      "Vial Code": "White",
+      "IV": "0.095",
+      "MW": "12020",
+      "Mn": "10960",
+      "Mw": "11210",
+      "Mw/Mn": "1.02",
+      "Mp": "11140",
+      "Mass": "1.2"
+    },
+    {
+      "Vial Code": "White",
+      "IV": "0.0282",
+      "MW": "655",
+      "Mn": "530",
+      "Mw": "600",
+      "Mw/Mn": "1.13",
+      "Mp": "580",
+      "Mass": "1.6"
+    },
+    {
+      "Vial Code": "Blue",
+      "IV": "1.9955",
+      "MW": "866000",
+      "Mn": "837000",
+      "Mw": "893000",
+      "Mw/Mn": "1.07",
+      "Mp": "935000",
+      "Mass": "0.4"
+    },
+    {
+      "Vial Code": "Blue",
+      "IV": "0.3105",
+      "MW": "67700",
+      "Mn": "63150",
+      "Mw": "65700",
+      "Mw/Mn": "1.04",
+      "Mp": "66600",
+      "Mass": "0.8"
+    },
+    {
+      "Vial Code": "Blue",
+      "IV": "0.0602",
+      "MW": "5710",
+      "Mn": "4800",
+      "Mw": "4950",
+      "Mw/Mn": "1.03",
+      "Mp": "4950",
+      "Mass": "1.2"
+    },
+    {
+      "Vial Code": "Blue",
+      "IV": "",
+      "MW": "",
+      "Mn": "",
+      "Mw": "",
+      "Mw/Mn": "1",
+      "Mp": "162",
+      "Mass": "1.6"
+    }
+  ],
+  "comments": [
+    "\"MP Mn & Mw are the respective peak number and weight molecular weight averages.\"",
+    "Mw/Mn = molecular weight distribution or polydispersity ratio.",
+    "IV is the Intrinsic Viscosity value."
+  ]
+}

@@ -1,0 +1,22 @@
+Product,Polystyrene High EasiVials (2ml),,,,,,
+Part Numbers,PL2010-0201 ,PL2010-0202,,,,,
+Batch Number,6851361,,,,,,
+,,,,,,,
+Vial Code,IV,MW,Mn,Mw,Mw/Mn,Mp,Mass
+-,dL/g,g/mol (light scattering),g/mol,g/mol,-,g/mol,mg
+Red,6.7686,5125000,5625000,5990000,1.06,6085000,0.4
+Red,1.1996,440000,443500,464500,1.05,474500,0.8
+Red,0.1415,21770,19890,20550,1.03,20140,1.2
+Red,0.0329,1360,1090,1160,1.07,1180,1.6
+White,4.6402,2666000,2564000,2705000,1.06,2811000,0.4
+White,0.6383,179600,175500,185800,1.06,182200,0.8
+White,0.095,12020,10960,11210,1.02,11140,1.2
+White,0.0282,655,530,600,1.13,580,1.6
+Blue,1.9955,866000,837000,893000,1.07,935000,0.4
+Blue,0.3105,67700,63150,65700,1.04,66600,0.8
+Blue,0.0602,5710,4800,4950,1.03,4950,1.2
+Blue,,,,,1,162,1.6
+,,,,,,,
+"MP, Mn & Mw are the respective peak, number and weight molecular weight averages.",,,,,,,
+Mw/Mn = molecular weight distribution or polydispersity ratio.,,,,,,,
+IV is the Intrinsic Viscosity value.,,,,,,,
